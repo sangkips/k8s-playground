@@ -1,4 +1,4 @@
-package handlers
+package healthhandler
 
 import (
 	"encoding/json"
@@ -16,4 +16,3 @@ func Healthz(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 	})
 }
-
