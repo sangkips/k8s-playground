@@ -8,6 +8,7 @@ import (
 	"sangkips/k8s-playground/internal/cache"
 	authhandler "sangkips/k8s-playground/internal/http/handlers/auth"
 	healthhandler "sangkips/k8s-playground/internal/http/handlers/health"
+	orghandler "sangkips/k8s-playground/internal/http/handlers/org"
 	userhandler "sangkips/k8s-playground/internal/http/handlers/user"
 	"sangkips/k8s-playground/internal/http/middleware"
 	"sangkips/k8s-playground/internal/mailer"
@@ -20,6 +21,7 @@ type Dependencies struct {
 	SessionStore      *store.SessionStore
 	VerificationStore *store.VerificationStore
 	ProfileStore      *store.ProfileStore
+	OrgStore          *store.OrgStore
 	TokenService      *auth.TokenService
 	OAuthStateStore   *cache.OAuthStateStore
 	Mailer            mailer.Mailer
@@ -80,6 +82,20 @@ func NewServer(addr string, deps Dependencies) *http.Server {
 	mux.Handle("GET /api/v1/users/me/progress", authn(http.HandlerFunc(userH.GetProgress)))
 	mux.Handle("GET /api/v1/users/me/certificates", authn(http.HandlerFunc(userH.GetCertificates)))
 	mux.Handle("GET /api/v1/users/{id}", authn(http.HandlerFunc(userH.GetUser)))
+
+	// ── Orgs (all protected) ──────────────────────────────────────────────────
+	orgH := orghandler.NewHandler(deps.OrgStore)
+	// orgAuthn chains auth + OrgID path-value extractor.
+	orgAuthn := func(h http.Handler) http.Handler { return authn(middleware.OrgID(h)) }
+
+	mux.Handle("POST /api/v1/orgs", authn(http.HandlerFunc(orgH.CreateOrg)))
+	mux.Handle("GET /api/v1/orgs/{orgId}", orgAuthn(http.HandlerFunc(orgH.GetOrg)))
+	mux.Handle("GET /api/v1/orgs/{orgId}/members", orgAuthn(http.HandlerFunc(orgH.ListMembers)))
+	mux.Handle("POST /api/v1/orgs/{orgId}/members/invite", orgAuthn(http.HandlerFunc(orgH.InviteMember)))
+	mux.Handle("PATCH /api/v1/orgs/{orgId}/members/{userId}", orgAuthn(http.HandlerFunc(orgH.UpdateMemberRole)))
+	mux.Handle("DELETE /api/v1/orgs/{orgId}/members/{userId}", orgAuthn(http.HandlerFunc(orgH.RemoveMember)))
+	mux.Handle("GET /api/v1/orgs/{orgId}/progress", orgAuthn(http.HandlerFunc(orgH.GetCohortProgress)))
+	mux.Handle("GET /api/v1/orgs/{orgId}/leaderboard", orgAuthn(http.HandlerFunc(orgH.GetLeaderboard)))
 
 	return &http.Server{
 		Addr:              addr,

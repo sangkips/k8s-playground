@@ -77,6 +77,7 @@ func main() {
 		SessionStore:      store.NewSessionStore(pool),
 		VerificationStore: store.NewVerificationStore(pool),
 		ProfileStore:      store.NewProfileStore(pool),
+		OrgStore:          store.NewOrgStore(pool),
 		TokenService:      tokenSvc,
 		OAuthStateStore:   cache.NewOAuthStateStore(rdb),
 		Mailer:            ml,
