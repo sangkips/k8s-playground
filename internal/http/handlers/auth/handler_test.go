@@ -25,12 +25,16 @@ func newTokenService(t *testing.T) *auth.TokenService {
 	return auth.NewTokenService("handler-test-secret", 15*time.Minute, 7*24*time.Hour, rdb)
 }
 
-func newHandler(t *testing.T) (*authhandler.Handler, *fakeUserStore, *fakeSessionStore, *auth.TokenService) {
+// newHandler builds a Handler with all fakes wired up.
+func newHandler(t *testing.T) (*authhandler.Handler, *fakeUserStore, *fakeSessionStore, *fakeVerificationStore, *fakeMailer, *auth.TokenService) {
 	t.Helper()
 	users := newFakeUserStore()
 	sessions := newFakeSessionStore()
+	verif := newFakeVerificationStore()
+	ml := &fakeMailer{}
 	tokens := newTokenService(t)
-	return authhandler.NewHandler(users, sessions, tokens), users, sessions, tokens
+	h := authhandler.NewHandler(users, sessions, tokens, verif, ml, "http://localhost:3000")
+	return h, users, sessions, verif, ml, tokens
 }
 
 func postJSON(t *testing.T, fn http.HandlerFunc, body any) *httptest.ResponseRecorder {
@@ -55,7 +59,6 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return m
 }
 
-// seedUser inserts a user directly into the fake store, bypassing HTTP.
 func seedUser(t *testing.T, users *fakeUserStore, email, password string) store.User {
 	t.Helper()
 	hash, err := auth.HashPassword(password)
@@ -73,7 +76,7 @@ func seedUser(t *testing.T, users *fakeUserStore, email, password string) store.
 
 func TestRegister_Success(t *testing.T) {
 	t.Parallel()
-	h, _, _, _ := newHandler(t)
+	h, _, _, _, _, _ := newHandler(t)
 
 	rec := postJSON(t, h.Register, map[string]string{
 		"email":        "ada@example.com",
@@ -85,13 +88,11 @@ func TestRegister_Success(t *testing.T) {
 		t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body)
 	}
 	body := decodeBody(t, rec)
-
 	for _, key := range []string{"access_token", "refresh_token", "expires_in", "user"} {
 		if _, ok := body[key]; !ok {
 			t.Errorf("expected %q in response", key)
 		}
 	}
-
 	user, _ := body["user"].(map[string]any)
 	if user["email"] != "ada@example.com" {
 		t.Errorf("user.email: got %v, want ada@example.com", user["email"])
@@ -103,15 +104,12 @@ func TestRegister_Success(t *testing.T) {
 
 func TestRegister_DuplicateEmail(t *testing.T) {
 	t.Parallel()
-	h, users, _, _ := newHandler(t)
+	h, users, _, _, _, _ := newHandler(t)
 	seedUser(t, users, "ada@example.com", "strongpassword123")
 
 	rec := postJSON(t, h.Register, map[string]string{
-		"email":        "ada@example.com",
-		"password":     "anotherpassword456",
-		"display_name": "Ada Again",
+		"email": "ada@example.com", "password": "anotherpassword456", "display_name": "Ada Again",
 	})
-
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d", rec.Code)
 	}
@@ -119,14 +117,11 @@ func TestRegister_DuplicateEmail(t *testing.T) {
 
 func TestRegister_InvalidEmail(t *testing.T) {
 	t.Parallel()
-	h, _, _, _ := newHandler(t)
+	h, _, _, _, _, _ := newHandler(t)
 
 	rec := postJSON(t, h.Register, map[string]string{
-		"email":        "not-an-email",
-		"password":     "strongpassword123",
-		"display_name": "Ada Lovelace",
+		"email": "not-an-email", "password": "strongpassword123", "display_name": "Ada",
 	})
-
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d", rec.Code)
 	}
@@ -134,14 +129,11 @@ func TestRegister_InvalidEmail(t *testing.T) {
 
 func TestRegister_PasswordTooShort(t *testing.T) {
 	t.Parallel()
-	h, _, _, _ := newHandler(t)
+	h, _, _, _, _, _ := newHandler(t)
 
 	rec := postJSON(t, h.Register, map[string]string{
-		"email":        "ada@example.com",
-		"password":     "tooshort",
-		"display_name": "Ada Lovelace",
+		"email": "ada@example.com", "password": "tooshort", "display_name": "Ada",
 	})
-
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d", rec.Code)
 	}
@@ -149,13 +141,11 @@ func TestRegister_PasswordTooShort(t *testing.T) {
 
 func TestRegister_MissingDisplayName(t *testing.T) {
 	t.Parallel()
-	h, _, _, _ := newHandler(t)
+	h, _, _, _, _, _ := newHandler(t)
 
 	rec := postJSON(t, h.Register, map[string]string{
-		"email":    "ada@example.com",
-		"password": "strongpassword123",
+		"email": "ada@example.com", "password": "strongpassword123",
 	})
-
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d", rec.Code)
 	}
@@ -163,7 +153,7 @@ func TestRegister_MissingDisplayName(t *testing.T) {
 
 func TestRegister_MalformedJSON(t *testing.T) {
 	t.Parallel()
-	h, _, _, _ := newHandler(t)
+	h, _, _, _, _, _ := newHandler(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("{bad json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -179,14 +169,12 @@ func TestRegister_MalformedJSON(t *testing.T) {
 
 func TestLogin_Success(t *testing.T) {
 	t.Parallel()
-	h, users, _, _ := newHandler(t)
+	h, users, _, _, _, _ := newHandler(t)
 	seedUser(t, users, "ada@example.com", "correctpassword123")
 
 	rec := postJSON(t, h.Login, map[string]string{
-		"email":    "ada@example.com",
-		"password": "correctpassword123",
+		"email": "ada@example.com", "password": "correctpassword123",
 	})
-
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body)
 	}
@@ -200,14 +188,12 @@ func TestLogin_Success(t *testing.T) {
 
 func TestLogin_WrongPassword(t *testing.T) {
 	t.Parallel()
-	h, users, _, _ := newHandler(t)
+	h, users, _, _, _, _ := newHandler(t)
 	seedUser(t, users, "ada@example.com", "correctpassword123")
 
 	rec := postJSON(t, h.Login, map[string]string{
-		"email":    "ada@example.com",
-		"password": "wrongpassword",
+		"email": "ada@example.com", "password": "wrongpassword",
 	})
-
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
@@ -215,13 +201,11 @@ func TestLogin_WrongPassword(t *testing.T) {
 
 func TestLogin_UnknownEmail(t *testing.T) {
 	t.Parallel()
-	h, _, _, _ := newHandler(t)
+	h, _, _, _, _, _ := newHandler(t)
 
 	rec := postJSON(t, h.Login, map[string]string{
-		"email":    "nobody@example.com",
-		"password": "somepassword123",
+		"email": "nobody@example.com", "password": "somepassword123",
 	})
-
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
@@ -229,15 +213,12 @@ func TestLogin_UnknownEmail(t *testing.T) {
 
 func TestLogin_EmailNormalized(t *testing.T) {
 	t.Parallel()
-	h, users, _, _ := newHandler(t)
+	h, users, _, _, _, _ := newHandler(t)
 	seedUser(t, users, "ada@example.com", "correctpassword123")
 
-	// Mixed-case email should match the lowercase-stored record.
 	rec := postJSON(t, h.Login, map[string]string{
-		"email":    "ADA@EXAMPLE.COM",
-		"password": "correctpassword123",
+		"email": "ADA@EXAMPLE.COM", "password": "correctpassword123",
 	})
-
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for case-insensitive email, got %d", rec.Code)
 	}
@@ -245,7 +226,7 @@ func TestLogin_EmailNormalized(t *testing.T) {
 
 func TestLogin_MalformedJSON(t *testing.T) {
 	t.Parallel()
-	h, _, _, _ := newHandler(t)
+	h, _, _, _, _, _ := newHandler(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("{bad"))
 	req.Header.Set("Content-Type", "application/json")
@@ -261,12 +242,11 @@ func TestLogin_MalformedJSON(t *testing.T) {
 
 func TestRefresh_Success(t *testing.T) {
 	t.Parallel()
-	h, users, _, _ := newHandler(t)
+	h, users, _, _, _, _ := newHandler(t)
 	seedUser(t, users, "ada@example.com", "correctpassword123")
 
 	loginRec := postJSON(t, h.Login, map[string]string{
-		"email":    "ada@example.com",
-		"password": "correctpassword123",
+		"email": "ada@example.com", "password": "correctpassword123",
 	})
 	if loginRec.Code != http.StatusOK {
 		t.Fatalf("login failed: %d — %s", loginRec.Code, loginRec.Body)
@@ -274,7 +254,6 @@ func TestRefresh_Success(t *testing.T) {
 	refreshToken, _ := decodeBody(t, loginRec)["refresh_token"].(string)
 
 	rec := postJSON(t, h.Refresh, map[string]string{"refresh_token": refreshToken})
-
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body)
 	}
@@ -288,10 +267,9 @@ func TestRefresh_Success(t *testing.T) {
 
 func TestRefresh_InvalidToken(t *testing.T) {
 	t.Parallel()
-	h, _, _, _ := newHandler(t)
+	h, _, _, _, _, _ := newHandler(t)
 
 	rec := postJSON(t, h.Refresh, map[string]string{"refresh_token": "totally-invalid-token"})
-
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
@@ -299,10 +277,9 @@ func TestRefresh_InvalidToken(t *testing.T) {
 
 func TestRefresh_MissingToken(t *testing.T) {
 	t.Parallel()
-	h, _, _, _ := newHandler(t)
+	h, _, _, _, _, _ := newHandler(t)
 
 	rec := postJSON(t, h.Refresh, map[string]string{})
-
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d", rec.Code)
 	}
@@ -310,19 +287,16 @@ func TestRefresh_MissingToken(t *testing.T) {
 
 func TestRefresh_TokenRotation(t *testing.T) {
 	t.Parallel()
-	h, users, _, _ := newHandler(t)
+	h, users, _, _, _, _ := newHandler(t)
 	seedUser(t, users, "ada@example.com", "correctpassword123")
 
 	loginRec := postJSON(t, h.Login, map[string]string{
-		"email":    "ada@example.com",
-		"password": "correctpassword123",
+		"email": "ada@example.com", "password": "correctpassword123",
 	})
 	firstToken, _ := decodeBody(t, loginRec)["refresh_token"].(string)
 
-	// First use — should succeed.
 	postJSON(t, h.Refresh, map[string]string{"refresh_token": firstToken})
 
-	// Second use of the same token — must be rejected.
 	rec := postJSON(t, h.Refresh, map[string]string{"refresh_token": firstToken})
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 on reuse of rotated token, got %d", rec.Code)
@@ -333,11 +307,10 @@ func TestRefresh_TokenRotation(t *testing.T) {
 
 func TestLogout_WithoutToken_Returns401(t *testing.T) {
 	t.Parallel()
-	h, _, _, _ := newHandler(t)
+	h, _, _, _, _, _ := newHandler(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
 	rec := httptest.NewRecorder()
-	// No claims in context — middleware not applied — must return 401.
 	h.Logout(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
@@ -356,18 +329,18 @@ func TestLogout_WithValidToken_ReturnsOK(t *testing.T) {
 
 	users := newFakeUserStore()
 	sessions := newFakeSessionStore()
+	verif := newFakeVerificationStore()
+	ml := &fakeMailer{}
 	tokens := auth.NewTokenService("logout-test-secret", 15*time.Minute, 7*24*time.Hour, rdb)
-	h := authhandler.NewHandler(users, sessions, tokens)
+	h := authhandler.NewHandler(users, sessions, tokens, verif, ml, "http://localhost:3000")
 
 	seedUser(t, users, "ada@example.com", "correctpassword123")
 
 	loginRec := postJSON(t, h.Login, map[string]string{
-		"email":    "ada@example.com",
-		"password": "correctpassword123",
+		"email": "ada@example.com", "password": "correctpassword123",
 	})
 	accessToken, _ := decodeBody(t, loginRec)["access_token"].(string)
 
-	// Simulate auth middleware: parse claims and inject into context.
 	claims, err := tokens.ValidateAccessToken(context.Background(), accessToken)
 	if err != nil {
 		t.Fatalf("validate token: %v", err)
@@ -385,7 +358,6 @@ func TestLogout_WithValidToken_ReturnsOK(t *testing.T) {
 		t.Error("expected ok=true in response")
 	}
 
-	// Token must now be on the denylist.
 	_, err = tokens.ValidateAccessToken(context.Background(), accessToken)
 	if err == nil {
 		t.Fatal("expected token to be revoked after logout, but validation succeeded")

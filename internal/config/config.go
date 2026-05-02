@@ -24,6 +24,23 @@ type Config struct {
 	RedisAddr     string
 	RedisPassword string
 	RedisDB       int
+
+	// OAuth providers
+	GitHubClientID     string
+	GitHubClientSecret string
+	GoogleClientID     string
+	GoogleClientSecret string
+
+	// Email (used for verification and password-reset mails)
+	AppBaseURL string // e.g. https://app.example.com — used to build callback links
+
+	// SMTP
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string // "Display Name <addr@example.com>"
+	SMTPUseTLS   bool   // true = implicit TLS port 465, false = STARTTLS port 587
 }
 
 func Load() (Config, error) {
@@ -92,6 +109,44 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("REDIS_DB: %w", err)
 		}
 		cfg.RedisDB = n
+	}
+
+	// OAuth
+	cfg.GitHubClientID = strings.TrimSpace(os.Getenv("GITHUB_CLIENT_ID"))
+	cfg.GitHubClientSecret = strings.TrimSpace(os.Getenv("GITHUB_CLIENT_SECRET"))
+	cfg.GoogleClientID = strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_ID"))
+	cfg.GoogleClientSecret = strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_SECRET"))
+
+	// App base URL (used in email links)
+	cfg.AppBaseURL = strings.TrimSpace(os.Getenv("APP_BASE_URL"))
+	if cfg.AppBaseURL == "" {
+		cfg.AppBaseURL = "http://localhost:8080"
+	}
+
+	// SMTP
+	cfg.SMTPHost = strings.TrimSpace(os.Getenv("SMTP_HOST"))
+	cfg.SMTPUsername = strings.TrimSpace(os.Getenv("SMTP_USERNAME"))
+	cfg.SMTPPassword = strings.TrimSpace(os.Getenv("SMTP_PASSWORD"))
+	cfg.SMTPFrom = strings.TrimSpace(os.Getenv("SMTP_FROM"))
+	if cfg.SMTPFrom == "" {
+		cfg.SMTPFrom = "K8s Platform <no-reply@example.com>"
+	}
+
+	cfg.SMTPPort = 587 // default: STARTTLS
+	if v := strings.TrimSpace(os.Getenv("SMTP_PORT")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("SMTP_PORT: %w", err)
+		}
+		cfg.SMTPPort = n
+	}
+
+	if v := strings.TrimSpace(os.Getenv("SMTP_USE_TLS")); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("SMTP_USE_TLS: %w", err)
+		}
+		cfg.SMTPUseTLS = b
 	}
 
 	return cfg, nil

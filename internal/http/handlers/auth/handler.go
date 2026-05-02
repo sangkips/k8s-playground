@@ -1,8 +1,10 @@
 package authhandler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -15,13 +17,30 @@ import (
 
 // Handler holds dependencies for all auth endpoints.
 type Handler struct {
-	users    UserStorer
-	sessions SessionStorer
-	tokens   *auth.TokenService
+	users        UserStorer
+	sessions     SessionStorer
+	tokens       *auth.TokenService
+	verification VerificationStorer
+	mailer       Mailer
+	appBaseURL   string
 }
 
-func NewHandler(users UserStorer, sessions SessionStorer, tokens *auth.TokenService) *Handler {
-	return &Handler{users: users, sessions: sessions, tokens: tokens}
+func NewHandler(
+	users UserStorer,
+	sessions SessionStorer,
+	tokens *auth.TokenService,
+	verification VerificationStorer,
+	mailer Mailer,
+	appBaseURL string,
+) *Handler {
+	return &Handler{
+		users:        users,
+		sessions:     sessions,
+		tokens:       tokens,
+		verification: verification,
+		mailer:       mailer,
+		appBaseURL:   appBaseURL,
+	}
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -99,6 +118,27 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = jti
+
+	// Send verification email in the background — don't block the response.
+	// Use context.WithoutCancel so the goroutine isn't killed when the HTTP
+	// request context is cancelled after the handler returns.
+	bgCtx := context.WithoutCancel(r.Context())
+	go func() {
+		raw, tokenHash, err := auth.IssueRefreshToken()
+		if err != nil {
+			slog.Error("generate verification token", "err", err)
+			return
+		}
+		expiresAt := time.Now().Add(verificationTokenTTL)
+		if err := h.verification.CreateToken(bgCtx, user.ID, store.TokenKindEmailVerification, tokenHash, expiresAt); err != nil {
+			slog.Error("store verification token", "err", err)
+			return
+		}
+		verifyURL := fmt.Sprintf("%s/verify-email?token=%s", h.appBaseURL, raw)
+		if err := h.mailer.SendVerificationEmail(bgCtx, user.Email, verifyURL); err != nil {
+			slog.Error("send verification email", "err", err)
+		}
+	}()
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"user": map[string]string{

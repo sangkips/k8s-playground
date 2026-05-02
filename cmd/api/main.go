@@ -14,6 +14,7 @@ import (
 	"sangkips/k8s-playground/internal/config"
 	"sangkips/k8s-playground/internal/db"
 	httpapi "sangkips/k8s-playground/internal/http"
+	"sangkips/k8s-playground/internal/mailer"
 	"sangkips/k8s-playground/internal/store"
 )
 
@@ -54,10 +55,36 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────────────────
 	tokenSvc := auth.NewTokenService(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL, rdb)
 
+	// ── Mailer ────────────────────────────────────────────────────────────────
+	var ml mailer.Mailer
+	if cfg.SMTPHost != "" {
+		ml = mailer.NewSMTPMailer(mailer.SMTPConfig{
+			Host:     cfg.SMTPHost,
+			Port:     cfg.SMTPPort,
+			Username: cfg.SMTPUsername,
+			Password: cfg.SMTPPassword,
+			From:     cfg.SMTPFrom,
+			UseTLS:   cfg.SMTPUseTLS,
+		})
+		slog.Info("mailer ready", "host", cfg.SMTPHost, "port", cfg.SMTPPort)
+	} else {
+		ml = mailer.NoOp{}
+		slog.Warn("SMTP_HOST not set — email sending disabled (NoOp mailer active)")
+	}
+
 	deps := httpapi.Dependencies{
-		UserStore:    store.NewUserStore(pool),
-		SessionStore: store.NewSessionStore(pool),
-		TokenService: tokenSvc,
+		UserStore:         store.NewUserStore(pool),
+		SessionStore:      store.NewSessionStore(pool),
+		VerificationStore: store.NewVerificationStore(pool),
+		TokenService:      tokenSvc,
+		OAuthStateStore:   cache.NewOAuthStateStore(rdb),
+		Mailer:            ml,
+		AppBaseURL:        cfg.AppBaseURL,
+
+		GitHubClientID:     cfg.GitHubClientID,
+		GitHubClientSecret: cfg.GitHubClientSecret,
+		GoogleClientID:     cfg.GoogleClientID,
+		GoogleClientSecret: cfg.GoogleClientSecret,
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
