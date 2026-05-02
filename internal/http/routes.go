@@ -8,6 +8,7 @@ import (
 	"sangkips/k8s-playground/internal/cache"
 	authhandler "sangkips/k8s-playground/internal/http/handlers/auth"
 	healthhandler "sangkips/k8s-playground/internal/http/handlers/health"
+	userhandler "sangkips/k8s-playground/internal/http/handlers/user"
 	"sangkips/k8s-playground/internal/http/middleware"
 	"sangkips/k8s-playground/internal/mailer"
 	"sangkips/k8s-playground/internal/store"
@@ -18,6 +19,7 @@ type Dependencies struct {
 	UserStore         *store.UserStore
 	SessionStore      *store.SessionStore
 	VerificationStore *store.VerificationStore
+	ProfileStore      *store.ProfileStore
 	TokenService      *auth.TokenService
 	OAuthStateStore   *cache.OAuthStateStore
 	Mailer            mailer.Mailer
@@ -36,9 +38,9 @@ func NewServer(addr string, deps Dependencies) *http.Server {
 	// ── Health ────────────────────────────────────────────────────────────────
 	mux.HandleFunc("/healthz", healthhandler.Healthz)
 
-	// ── Auth ──────────────────────────────────────────────────────────────────
 	authn := middleware.Authenticate(deps.TokenService)
 
+	// ── Auth ──────────────────────────────────────────────────────────────────
 	authH := authhandler.NewHandler(
 		deps.UserStore,
 		deps.SessionStore,
@@ -47,14 +49,12 @@ func NewServer(addr string, deps Dependencies) *http.Server {
 		deps.Mailer,
 		deps.AppBaseURL,
 	)
-
 	emailH := authhandler.NewEmailHandler(
 		deps.UserStore,
 		deps.VerificationStore,
 		deps.Mailer,
 		deps.AppBaseURL,
 	)
-
 	oauthH := authhandler.NewOAuthHandler(
 		deps.OAuthStateStore,
 		deps.GitHubClientID,
@@ -63,7 +63,6 @@ func NewServer(addr string, deps Dependencies) *http.Server {
 		deps.GoogleClientSecret,
 	)
 
-	// Public auth routes
 	mux.HandleFunc("POST /api/v1/auth/register", authH.Register)
 	mux.HandleFunc("POST /api/v1/auth/login", authH.Login)
 	mux.HandleFunc("POST /api/v1/auth/refresh", authH.Refresh)
@@ -71,9 +70,16 @@ func NewServer(addr string, deps Dependencies) *http.Server {
 	mux.HandleFunc("POST /api/v1/auth/forgot-password", emailH.ForgotPassword)
 	mux.HandleFunc("POST /api/v1/auth/reset-password", emailH.ResetPassword)
 	mux.HandleFunc("POST /api/v1/auth/oauth/{provider}", oauthH.OAuthStart)
-
-	// Protected routes
 	mux.Handle("POST /api/v1/auth/logout", authn(http.HandlerFunc(authH.Logout)))
+
+	// ── Users (all protected) ─────────────────────────────────────────────────
+	userH := userhandler.NewHandler(deps.ProfileStore, deps.AppBaseURL)
+
+	mux.Handle("GET /api/v1/users/me", authn(http.HandlerFunc(userH.GetMe)))
+	mux.Handle("PATCH /api/v1/users/me", authn(http.HandlerFunc(userH.PatchMe)))
+	mux.Handle("GET /api/v1/users/me/progress", authn(http.HandlerFunc(userH.GetProgress)))
+	mux.Handle("GET /api/v1/users/me/certificates", authn(http.HandlerFunc(userH.GetCertificates)))
+	mux.Handle("GET /api/v1/users/{id}", authn(http.HandlerFunc(userH.GetUser)))
 
 	return &http.Server{
 		Addr:              addr,
